@@ -2,7 +2,7 @@
 
 WebSocket protocol (/ws)
   client -> server
-    {"type": "start", "voice": "speaker_1", "allow_interruptions": true, "tts_steps": 16,
+    {"type": "start", "voice": "Ayesha", "allow_interruptions": true, "tts_steps": 16,
      "hour"?: 0-23, "history"?: [{"role": "user"|"assistant", "text"}]}   first message; with a history (the chat on screen
                                                            when the mic is turned on again) there is no greeting
     binary: 16 kHz mono float32 little-endian microphone audio, any length (512 samples is typical)
@@ -34,6 +34,7 @@ import re
 import sys
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +44,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ROOT, Settings
+from .llm.manager import LLMRouter, list_models as list_llm_models, parse_keys
 from .session import Models, Session, SessionOptions
 
 logger = logging.getLogger("banglavoice")
@@ -62,15 +64,11 @@ def setup_logging(level: str) -> None:
 
 
 def load_models(settings: Settings) -> Models:
-    from .llm.gemini import GeminiChat
     from .stt.hima import HimaASR
     from .tts.omnivoice import OmniVoiceEngine
 
-    t = time.perf_counter()
-    llm = GeminiChat(settings.gemini_api_keys, settings.gemini_model, settings.system_prompt,
-                     settings.gemini_thinking, settings.gemini_max_tokens)
-    reply = llm.ping()
-    logger.info("LLM   %s ok (%.2f s): %s", settings.gemini_model, time.perf_counter() - t, reply.strip()[:40])
+    llm = LLMRouter(settings)  # Gemini or Ollama; switchable later from the web UI
+    llm.start()
 
     t = time.perf_counter()
     asr = HimaASR(settings.asr_dir, threads=settings.asr_threads, language=settings.asr_language or None)
@@ -116,7 +114,7 @@ def create_app(settings: Settings) -> FastAPI:
             "voices": list(models.tts.voices), "default_voice": settings.default_voice,
             "allow_interruptions": settings.allow_interruptions, "tts_steps": settings.tts_steps,
             "debug": settings.debug,
-            "llm": settings.gemini_model, "asr": "Hima-ASR int8 (ONNX, CPU)",
+            "llm": models.llm.label(), "asr": "Hima-ASR int8 (ONNX, CPU)",
             "tts": f"OmniVoice Q8_0 (omnivoice.cpp, {settings.tts_device})",
         })
 
@@ -175,6 +173,44 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(500, f"Could not create the voice: {e}")
         logger.info("voice %s cloned from the web UI (%.1f s reference)", name, secs)
         return {"name": name, "voices": list(models.tts.voices)}
+
+    # --- language model settings (Settings dialog) ---------------------------------------------------------
+    @app.get("/api/llm")
+    async def llm_settings():
+        return state["models"].llm.config.public()
+
+    @app.post("/api/llm/models")
+    async def llm_models(body: dict = Body(...)):
+        """Models the given Gemini key(s) or Ollama server offer (for the model picker)."""
+        router: LLMRouter = state["models"].llm
+        provider = body.get("provider")
+        keys = parse_keys(str(body.get("api_keys") or "")) or router.config.gemini_api_keys
+        try:
+            names = await asyncio.to_thread(list_llm_models, provider, settings, str(body.get("url") or ""), keys)
+        except Exception as e:
+            raise HTTPException(400, f"Could not list the models: {e}")
+        return {"models": names}
+
+    @app.post("/api/llm")
+    async def llm_save(body: dict = Body(...)):
+        """Switch the language model after a test request succeeds; empty API keys keep the saved ones."""
+        router: LLMRouter = state["models"].llm
+        provider = body.get("provider")
+        if provider not in ("gemini", "ollama"):
+            raise HTTPException(400, "Choose Gemini or Ollama.")
+        g, o = body.get("gemini") or {}, body.get("ollama") or {}
+        cfg = replace(router.config, provider=provider,
+                      gemini_api_keys=parse_keys(str(g.get("api_keys") or "")) or router.config.gemini_api_keys,
+                      gemini_model=str(g.get("model") or router.config.gemini_model).strip(),
+                      ollama_url=str(o.get("url") or "").strip() or router.config.ollama_url,
+                      ollama_model=str(o.get("model") or "").strip() or router.config.ollama_model)
+        if provider == "gemini" and not cfg.gemini_api_keys:
+            raise HTTPException(400, "Enter at least one Gemini API key.")
+        try:
+            result = await asyncio.to_thread(router.test_and_switch, cfg)
+        except Exception as e:
+            raise HTTPException(400, f"{cfg.label()} did not answer: {e}")
+        return {**result, "label": cfg.label(), "settings": cfg.public()}
 
     def _hour(msg: dict) -> int | None:
         """The user's local hour, sent by the browser with "start" and "reset"."""

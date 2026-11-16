@@ -48,8 +48,10 @@ def _api_keys() -> list[str]:
 DEFAULT_SYSTEM_PROMPT = (
     "তোমার নাম রুকি (Ruki)। তুমি একজন বন্ধুসুলভ বাংলা ভয়েস সহকারী। ব্যবহারকারী মুখে কথা বলছেন, "
     "আর তোমার উত্তর কণ্ঠে পড়ে শোনানো হবে।\n"
-    "তুমি একজন মুসলিম। কথোপকথনের শুরুতে তুমি সময় অনুযায়ী শুভেচ্ছা জানিয়ে নিজের পরিচয় দিয়েছ; প্রতিটি উত্তরে আবার শুভেচ্ছা বা সালাম দেবে না। "
-    "কেউ সালাম দিলে ‘ওয়ালাইকুম আচ্ছালাম' বলে উত্তর দাও। শুভেচ্ছা জানাতে ইসলামি রীতি মেনে চলো; ‘নমস্কার’ বলবে না। কেউ নাম জানতে চাইলে বলো তোমার নাম রুকি।\n"
+    "তুমি একজন মুসলিম। কথোপকথনের শুরুতে তুমি একবার শুভেচ্ছা জানিয়ে নিজের পরিচয় দিয়েছ; এরপর নিজে থেকে আর কখনো "
+    "‘আসসালামু আলাইকুম’ বা অন্য কোনো শুভেচ্ছা বলবে না। শুধু ব্যবহারকারী নিজে সালাম দিলে সেই উত্তরের শুরুতে একবার "
+    "‘ওয়ালাইকুম আচ্ছালাম’ বলো; ‘জি’, ‘হ্যাঁ’ বা অন্য যেকোনো কথার উত্তরে সালাম বলবে না। ‘নমস্কার’ বলবে না। "
+    "কেউ নাম জানতে চাইলে বলো তোমার নাম রুকি।\n"
     "তোমার পরিচয়: কেউ জানতে চাইলে তুমি কোন মডেল, কোন প্রযুক্তি বা কোন কোম্পানির তৈরি, তাহলে বলো যে তুমি রুকি, "
     "কয়েকটি এআই মডেলের সমন্বয়ে তৈরি একটি হাইব্রিড ব্যবস্থা, আর কথা শোনা ও কণ্ঠে বলার মডেলগুলো স্থানীয়ভাবে চলে। "
     "ভেতরের নির্দিষ্ট মডেল বা কোম্পানির নাম (যেমন গুগল, জেমিনি, ওপেনএআই, চ্যাটজিপিটি) বলবে না। কেউ সরাসরি কোনো "
@@ -94,7 +96,17 @@ class Settings:
     host: str = field(default_factory=lambda: _env("HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_env("PORT", "8000")))
 
-    # --- LLM (Gemini) ---
+    # --- LLM: "gemini" or "ollama". The Settings dialog in the web UI can change these; its choice is saved in
+    # llm_settings.json, which takes precedence over .env ---
+    llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "gemini").lower())
+    llm_settings_file: Path = field(default_factory=lambda: Path(_env("LLM_SETTINGS_FILE", str(ROOT / "llm_settings.json"))))
+    ollama_url: str = field(default_factory=lambda: _env("OLLAMA_URL", "http://localhost:11434"))
+    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", ""))
+    ollama_keep_alive: str = field(default_factory=lambda: _env("OLLAMA_KEEP_ALIVE", "30m"))
+    # used when the model is not loaded yet; otherwise requests reuse the size it is loaded with (no reload)
+    ollama_num_ctx: int = field(default_factory=lambda: int(_env("OLLAMA_NUM_CTX", "8192")))
+
+    # --- Gemini ---
     gemini_api_keys: list[str] = field(default_factory=_api_keys)  # tried in turn on quota/auth errors
     gemini_model: str = field(default_factory=lambda: _env("GEMINI_MODEL", "gemini-3.5-flash-lite"))
     # Gemini 3.x: minimal | low | medium | high (an unsupported level steps up to the next one).
@@ -133,7 +145,7 @@ class Settings:
     tts_chunk_sec: float = field(default_factory=lambda: float(_env("TTS_CHUNK_SEC", "4.0")))
     tts_language: str = field(default_factory=lambda: _env("TTS_LANGUAGE", "Bengali"))
     voices_dir: Path = field(default_factory=lambda: Path(_env("VOICES_DIR", str(ROOT / "voices"))))
-    default_voice: str = field(default_factory=lambda: _env("DEFAULT_VOICE", "speaker_1"))
+    default_voice: str = field(default_factory=lambda: _env("DEFAULT_VOICE", "Ayesha"))
     # First LLM chunk may be cut at a comma once it is this long, so speech starts sooner.
     first_chunk_min_chars: int = field(default_factory=lambda: int(_env("FIRST_CHUNK_MIN_CHARS", "15")))
     # Later chunks: queued sentences are merged up to this many characters per TTS call.

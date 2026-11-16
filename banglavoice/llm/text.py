@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Iterator
 
 # Sentence ends: Bangla dari, double dari, ? ! an ASCII full stop followed by a space/end, or a newline.
 _SENT_END = re.compile(r"[।॥?!]+[\"'”’)]*|(?<![0-9০-৯])\.(?=\s|$)[\"'”’)]*|\n+")
@@ -22,6 +23,50 @@ def clean_for_speech(text: str) -> str:
     text = _EMOJI.sub("", text)
     text = text.replace("*", "").replace("#", "")
     return _SPACE.sub(" ", text).strip()
+
+
+# Salam in a reply (আসসালামু আলাইকুম, ওয়ালাইকুম আসসালাম and spellings like আচ্ছালাম, আছলাম, আলায়কুম) and in the
+# user's words (also typed in Latin letters: assalamualaikum, salam, slm, walaikum ...).
+_SALAM = re.compile(r"সালাম|ছালাম|ছলাম|সলাম|লাইকুম|লায়কুম")
+_USER_SALAM = re.compile(r"সালাম|ছালাম|ছলাম|সলাম|লাইকুম|লায়কুম|salam|salaam|\bslm\b|alaikum|alaykum|alaikom", re.IGNORECASE)
+_CLAUSE_END = re.compile(r"[।॥!?,;\n]")
+
+
+def user_gave_salam(text: str) -> bool:
+    return bool(_USER_SALAM.search(text))
+
+
+def strip_unprompted_salam(deltas: Iterator[str], user_text: str) -> Iterator[str]:
+    """Drop the salam a model sometimes opens a reply with although the user did not greet with salam.
+
+    Only the reply's opening clause(s) are checked: they are held back until the first clause ends, so the
+    rest of the reply streams through unchanged. When the user did give salam, the reply passes as it is.
+    """
+    if user_gave_salam(user_text):
+        yield from deltas
+        return
+    buf, passing, dropped = "", False, False
+    for delta in deltas:
+        if passing:
+            yield delta
+            continue
+        buf += delta
+        while (m := _CLAUSE_END.search(buf)) is not None:
+            if _SALAM.search(buf[:m.end()]):
+                buf = buf[m.end():].lstrip()  # drop the greeting clause; the next one may be another greeting
+                dropped = True
+                continue
+            passing = True
+            break
+        if not passing and len(buf) > 80 and not _SALAM.search(buf):
+            passing = True  # a long opening without punctuation and without salam
+        if passing:
+            buf = buf.lstrip() if dropped else buf
+            if buf:
+                yield buf
+            buf = ""
+    if not passing and buf.strip() and not _SALAM.search(buf):
+        yield buf.lstrip() if dropped else buf
 
 
 def _has_speech(text: str) -> bool:

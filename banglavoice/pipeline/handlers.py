@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 
-from ..llm.text import SentenceChunker
+from ..llm.text import SentenceChunker, strip_unprompted_salam
 from ..vad.models import FRAME, SR, Denoiser, SileroVAD
 from ..vad.vad_iterator import VADIterator
 from .base_handler import BaseHandler
@@ -143,7 +143,7 @@ class LLMHandler(BaseHandler):
         chunker = SentenceChunker(first_min_chars=session.settings.first_chunk_min_chars)
         parts: list[str] = []
         try:
-            for delta in self.llm.stream(history, should_stop=stale):
+            for delta in strip_unprompted_salam(self.llm.stream(history, should_stop=stale), history[-1]["text"]):
                 if not timings.llm_first_token:
                     timings.llm_first_token = time.perf_counter()
                 parts.append(delta)

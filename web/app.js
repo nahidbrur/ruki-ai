@@ -272,7 +272,7 @@ const cloneText = $("cloneText"), cloneName = $("cloneName"), cloneStatus = $("c
 const CLONE_RATE = 24000, CLONE_MAX_S = 15;
 let cloneAudio = null; // base64 WAV of the prepared clip
 
-$("settingsBtn").addEventListener("click", () => settingsDlg.showModal());
+$("settingsBtn").addEventListener("click", () => { settingsDlg.showModal(); loadLlmSettings(); });
 $("settingsClose").addEventListener("click", () => settingsDlg.close());
 settingsDlg.addEventListener("click", (e) => { if (e.target === settingsDlg) settingsDlg.close(); }); // backdrop
 
@@ -362,6 +362,74 @@ cloneBtn.addEventListener("click", async () => {
     cloneMsg(err.message, "err");
   }
   updateCloneBtn();
+});
+
+// ---------------------------------------------------------------------------- settings: language model
+const llmStatus = $("llmStatus"), llmSave = $("llmSave");
+const geminiKeys = $("geminiKeys"), geminiModel = $("geminiModel"), ollamaUrl = $("ollamaUrl"), ollamaModel = $("ollamaModel");
+const providerRadios = [...document.querySelectorAll('input[name="llmProvider"]')];
+const llmProvider = () => (providerRadios.find((r) => r.checked) || {}).value;
+
+function llmMsg(text, kind = "") { llmStatus.textContent = text; llmStatus.className = `clone-status ${kind}`; }
+function showProviderFields() {
+  $("geminiFields").hidden = llmProvider() !== "gemini";
+  $("ollamaFields").hidden = llmProvider() !== "ollama";
+}
+providerRadios.forEach((r) => r.addEventListener("change", () => { showProviderFields(); llmMsg(""); }));
+
+function fillLlm(cfg) {
+  providerRadios.forEach((r) => { r.checked = r.value === cfg.provider; });
+  geminiModel.value = cfg.gemini.model || "";
+  geminiKeys.value = "";
+  $("geminiSaved").textContent = cfg.gemini.keys.length
+    ? `Saved keys: ${cfg.gemini.keys.join(", ")}. Entering keys here replaces them.` : "No API key saved yet.";
+  ollamaUrl.value = cfg.ollama.url || "";
+  ollamaModel.value = cfg.ollama.model || "";
+  showProviderFields();
+}
+
+async function loadLlmSettings() {
+  llmMsg("");
+  try { fillLlm(await (await fetch("/api/llm")).json()); } catch (_) { llmMsg("Could not read the current settings.", "err"); }
+}
+
+async function loadModelList(provider, button, list) {
+  button.disabled = true;
+  llmMsg("Loading the model list…");
+  try {
+    const { models } = await postJSON("/api/llm/models", { provider, url: ollamaUrl.value, api_keys: geminiKeys.value });
+    list.innerHTML = "";
+    models.forEach((m) => list.appendChild(new Option(m, m)));
+    const input = provider === "ollama" ? ollamaModel : geminiModel;
+    if (!input.value && models.length) input.value = models[0];
+    llmMsg(models.length ? `${models.length} model${models.length > 1 ? "s" : ""} found. Pick one in the Model field.` : "No chat models found.",
+      models.length ? "" : "err");
+  } catch (err) {
+    llmMsg(err.message, "err");
+  }
+  button.disabled = false;
+}
+$("geminiLoad").addEventListener("click", (e) => loadModelList("gemini", e.currentTarget, $("geminiModelList")));
+$("ollamaLoad").addEventListener("click", (e) => loadModelList("ollama", e.currentTarget, $("ollamaModelList")));
+
+llmSave.addEventListener("click", async () => {
+  const provider = llmProvider();
+  llmSave.disabled = true;
+  llmMsg(provider === "ollama" ? "Testing… (the first request can take a while if Ollama has to load the model)" : "Testing…");
+  try {
+    const r = await postJSON("/api/llm", {
+      provider,
+      gemini: { api_keys: geminiKeys.value, model: geminiModel.value },
+      ollama: { url: ollamaUrl.value, model: ollamaModel.value },
+    });
+    fillLlm(r.settings);
+    llmMsg(`Now using ${r.label}. Test reply in ${r.seconds} s.`, "ok");
+    const chip = [...document.querySelectorAll(".chip")].find((c) => c.textContent.startsWith("LLM"));
+    if (chip) chip.innerHTML = `<b>LLM</b> ${r.label}`;
+  } catch (err) {
+    llmMsg(err.message, "err");
+  }
+  llmSave.disabled = false;
 });
 
 // ---------------------------------------------------------------------------- dark mode switch

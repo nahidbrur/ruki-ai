@@ -1,8 +1,8 @@
 # BanglaVoice
 
 **Ruki** is a real-time Bangla voice assistant. Talk to it in Bangla and it talks back. It listens through the
-browser microphone, understands you with a local speech recognizer, answers with Gemini, and speaks the answer
-with a local voice-cloning TTS while it is still being written.
+browser microphone, understands you with a local speech recognizer, answers with Gemini or an Ollama model, and
+speaks the answer with a local voice-cloning TTS while it is still being written.
 
 ![Ruki: a conversation in the web UI](docs/screenshots/conversation-light.png)
 
@@ -18,6 +18,7 @@ with a local voice-cloning TTS while it is still being written.
 - **Typed messages** work alongside voice.
 - **Remembers the conversation.** Each reply takes the recent conversation into account, also after the
   microphone is turned off and on again.
+- **Gemini or Ollama.** Choose the language model in Settings, including an Ollama server on another computer.
 - **Voice cloning from the browser.** Upload a short recording in Settings and Ruki speaks in that voice.
 - **Light and dark mode**, with a switch in the top-right corner.
 - **Debug view** (`LOG_LEVEL=DEBUG`): each turn shows its timing breakdown, and the header lists the models.
@@ -85,7 +86,7 @@ Everything else is set in `.env`.
 | Stop speaking | Stops the current reply |
 | New conversation | Clears the history; Ruki greets you again |
 | Message box | Type instead of speaking |
-| Gear button | Settings: clone a new voice from a recording |
+| Gear button | Settings: choose the language model (Gemini or Ollama), clone a new voice from a recording |
 | Sun/moon switch | Light or dark mode; your choice is remembered |
 
 ![Ruki in dark mode](docs/screenshots/conversation-dark.png)
@@ -97,19 +98,44 @@ likely to change:
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEYS` | (required) | One key, or several as a JSON list or comma-separated; the next key is used when one hits its quota |
+| `LLM_PROVIDER` | `gemini` | `gemini` or `ollama` (Settings in the UI overrides it, see below) |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | `http://localhost:11434`, none | The Ollama server and model |
+| `GEMINI_API_KEYS` | (required for Gemini) | One key, or several as a JSON list or comma-separated; the next key is used when one hits its quota |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any model your key can use (`python scripts/check_gemini.py` lists them) |
 | `SYSTEM_PROMPT` | Ruki's persona | Who Ruki is and how it answers (see [config.py](banglavoice/config.py)) |
 | `WELCOME_MESSAGE` | “{time_greeting}আমি রুকি। …” | Spoken when a conversation starts; leave empty for no greeting. `{time_greeting}` becomes good morning / afternoon / evening / night by the user's local time |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also shows each turn's timing breakdown and the model names in the UI |
 | `TTS_DEVICE` | `Vulkan1` | The Vulkan device for the TTS (`Vulkan0`, `Vulkan1`, …) or `CPU` |
 | `TTS_STEPS` | `16` | Default TTS quality (8, 12, 16 or 32) |
-| `DEFAULT_VOICE` | `speaker_1` | The voice selected when the page opens |
+| `DEFAULT_VOICE` | `Ayesha` | The voice selected when the page opens |
 | `MAX_HISTORY_TURNS` | `12` | How many recent exchanges (your message + Ruki's reply) are sent to the LLM with each message |
 | `VAD_MIN_SILENCE_MS` | `600` | Silence that ends your turn: lower answers sooner, higher cuts you off less |
 | `ALLOW_INTERRUPTIONS` | `true` | Default for the interruptions checkbox |
 | `BARGE_IN_MIN_MS`, `BARGE_IN_THRESHOLD` | `350`, `0.7` | How long and how clearly you must speak to interrupt Ruki |
 | `HOST`, `PORT` | `127.0.0.1`, `8000` | Where the server listens |
+
+## Language model: Gemini or Ollama
+
+Open **Settings** (the gear button) > **Language model**:
+
+- **Gemini:** paste one or more API keys (one per line; the next key is used when one hits its quota) and pick a
+  model (**Load list** shows the ones your key can use). Saved keys are only ever shown masked.
+- **Ollama:** enter the server address (for example `http://192.168.1.20:11434`; `http://` and the port are added
+  if missing), click **Load models** and pick one.
+
+**Save and test** sends one short request and switches only if the model answers; new messages use it right away,
+in every open conversation. The choice is saved in `llm_settings.json` (kept out of git, readable only by you),
+which takes precedence over `.env`. Delete that file to go back to the `.env` values.
+
+Using Ollama on another computer:
+
+- Start Ollama there so it accepts network connections: `OLLAMA_HOST=0.0.0.0 ollama serve` (for the system
+  service, add `Environment="OLLAMA_HOST=0.0.0.0"` with `sudo systemctl edit ollama`, then restart it).
+- Ruki turns a model's "thinking" off (`think: false`) and reuses the context size the model is already loaded
+  with, because a different size makes Ollama reload the model for every request (seconds each time).
+- Replies start later when the Ollama computer is busy with other requests: they wait in its queue.
+- The settings page has no login. With the default `HOST=127.0.0.1` only this computer can open it; if you serve
+  Ruki on the network, anyone who can open the page can change the model.
 
 ## Turn taking
 
@@ -131,8 +157,8 @@ and Ruki continues without greeting again. **New conversation** clears the memor
 
 ## Voices
 
-Every `voices/<name>.wav` that has a matching `voices/<name>.txt` transcript is loaded at start-up and listed
-in the UI. Use 3-10 seconds of one clean speaker and the exact transcript of what is said; a longer recording
+Two voices are included, **Ayesha** (the default) and **Rebeka**. Every `voices/<name>.wav` (or `.mp3`, `.flac`,
+`.ogg`) that has a matching `voices/<name>.txt` transcript is loaded at start-up and listed in the UI. Use 3-10 seconds of one clean speaker and the exact transcript of what is said; a longer recording
 makes every reply slower.
 
 **Cloning a voice in the browser:** open Settings (the gear button), upload a recording (WAV, MP3, M4A, OGG…),
@@ -168,11 +194,11 @@ BanglaVoice/
 │   ├── pipeline/              stage base class, the four handlers, the messages between them
 │   ├── vad/                   Silero VAD, GTCRN denoiser, utterance segmentation
 │   ├── stt/hima.py            Hima-ASR
-│   ├── llm/                   Gemini streaming with key failover; sentence chunking for the TTS
+│   ├── llm/                   Gemini and Ollama clients, the switchable router (manager.py), sentence chunking
 │   └── tts/omnivoice.py       OmniVoice via omnivoice.cpp
 ├── web/                       index.html, app.js, style.css, microphone and playback audio worklets
 ├── models/                    see Models
-├── voices/                    reference voices: <name>.wav + <name>.txt (user/: voices cloned in the UI)
+├── voices/                    reference voices: <name>.mp3/.wav + <name>.txt (user/: voices cloned in the UI)
 ├── scripts/                   test and diagnostic tools (see below)
 ├── docs/screenshots/
 └── .env.example, requirements.txt, environment.yml

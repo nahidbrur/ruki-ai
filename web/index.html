@@ -89,6 +89,45 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
+    <section class="sheet-body" aria-labelledby="llmTitle">
+      <h3 id="llmTitle">Language model</h3>
+      <p class="muted">The model that writes Ruki's replies. A change applies to the next message.</p>
+      <div class="seg" role="radiogroup" aria-label="Language model provider">
+        <label><input type="radio" name="llmProvider" value="gemini"><span>Gemini</span></label>
+        <label><input type="radio" name="llmProvider" value="ollama"><span>Ollama</span></label>
+      </div>
+      <div id="geminiFields" class="fieldset">
+        <label class="field">API keys
+          <textarea id="geminiKeys" rows="2" autocomplete="off" spellcheck="false"
+            placeholder="One key per line. Leave empty to keep the saved keys."></textarea>
+        </label>
+        <p class="muted" id="geminiSaved"></p>
+        <label class="field">Model
+          <span class="row">
+            <input type="text" id="geminiModel" list="geminiModelList" autocomplete="off" spellcheck="false" placeholder="gemini-3.5-flash-lite">
+            <button type="button" class="ghost" id="geminiLoad">Load list</button>
+          </span>
+          <datalist id="geminiModelList"></datalist>
+        </label>
+      </div>
+      <div id="ollamaFields" class="fieldset" hidden>
+        <label class="field">Server address
+          <input type="text" id="ollamaUrl" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.20:11434">
+        </label>
+        <label class="field">Model
+          <span class="row">
+            <input type="text" id="ollamaModel" list="ollamaModelList" autocomplete="off" spellcheck="false" placeholder="Load the list or type a name">
+            <button type="button" class="ghost" id="ollamaLoad">Load models</button>
+          </span>
+          <datalist id="ollamaModelList"></datalist>
+        </label>
+        <p class="muted">The Ollama computer must accept network connections: start Ollama there with
+          <code>OLLAMA_HOST=0.0.0.0</code>.</p>
+      </div>
+      <div class="clone-status" id="llmStatus" role="status"></div>
+      <button type="button" class="primary" id="llmSave">Save and test</button>
+    </section>
+    <hr class="sheet-sep">
     <section class="sheet-body">
       <h3>Clone a voice</h3>
       <p class="muted">Upload 3–10 seconds of one person speaking clearly, with no music or background noise.

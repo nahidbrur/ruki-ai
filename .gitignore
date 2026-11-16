@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+llm_settings.json
 
 # --- Large model files (~1.5 GB; see README "Models" for where they come from) ---
 # Small files next to them stay tracked: licenses, NOTICE, keep_ids.json, tokenizer_config.json, the build patch.

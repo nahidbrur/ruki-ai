@@ -27,6 +27,7 @@ from scipy.signal import resample_poly
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24000
+VOICE_EXTS = (".wav", ".mp3", ".flac", ".ogg")  # reference voice formats (read by soundfile/libsndfile)
 OV_LOG_WARN = 2
 _LIB_ORDER = ("libggml-base.so.0", "libggml-cpu.so.0", "libggml-vulkan.so.0", "libggml.so.0", "libomnivoice.so")
 
@@ -179,14 +180,16 @@ class OmniVoiceEngine:
         return ref.ref_T / 25
 
     def load_voices_dir(self, voices_dir: str | Path) -> list[str]:
-        """Every <name>.wav with a matching <name>.txt transcript becomes a voice."""
-        for wav in sorted(Path(voices_dir).glob("*.wav")):
-            txt = wav.with_suffix(".txt")
-            if not txt.is_file():
-                logger.warning("voice %s has no transcript %s; skipped", wav.name, txt.name)
+        """Every <name>.wav/.mp3/.flac/.ogg with a matching <name>.txt transcript becomes a voice."""
+        for audio in sorted(Path(voices_dir).iterdir()):
+            if audio.suffix.lower() not in VOICE_EXTS or audio.stem in self.voices:
                 continue
-            secs = self.add_voice(wav.stem, wav, txt.read_text(encoding="utf-8"))
-            logger.info("voice %-12s %.1f s reference", wav.stem, secs)
+            txt = audio.with_suffix(".txt")
+            if not txt.is_file():
+                logger.warning("voice %s has no transcript %s; skipped", audio.name, txt.name)
+                continue
+            secs = self.add_voice(audio.stem, audio, txt.read_text(encoding="utf-8"))
+            logger.info("voice %-12s %.1f s reference", audio.stem, secs)
         return list(self.voices)
 
     # --- synthesis -------------------------------------------------------------------------------
