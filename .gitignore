@@ -1,0 +1,39 @@
+# --- Secrets: API keys live in .env (.env.example is the template that is committed) ---
+.env
+.env.*
+!.env.example
+
+# --- Large model files (~1.5 GB; see README "Models" for where they come from) ---
+# Small files next to them stay tracked: licenses, NOTICE, keep_ids.json, tokenizer_config.json, the build patch.
+models/**/*.onnx
+models/**/*.onnx_data
+models/**/*.npy
+models/**/*.gguf
+models/**/*.so*
+models/asr/hima-asr-onnx/tokenizer.json
+
+# --- Generated audio and logs ---
+outputs/
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Editors and OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

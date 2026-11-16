@@ -1,0 +1,17 @@
+Hima checkpoints
+
+Copyright 2026 the Hima authors.
+
+What is ours is under the Apache License, Version 2.0 (see the file LICENSE): the code, the bridge,
+the vote layer, and the changes that our training made to the weights.
+
+These checkpoints start from two other models. Their terms stay in force for their parts.
+
+1. The ears start from the audio part of Qwen3-ASR-1.7B, which is under the Apache License, Version 2.0.
+   The weights were changed by further training.
+
+2. The writer starts from Gemma 3 270M. The weights were changed by further training.
+   Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+   The writer part of every checkpoint here is a Model Derivative under those terms. If you use or pass on a
+   checkpoint, the use restrictions in Section 3.2 of those terms apply to you
+   (the Gemma Prohibited Use Policy: ai.google.dev/gemma/prohibited_use_policy).

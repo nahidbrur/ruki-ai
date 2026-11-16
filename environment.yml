@@ -1,0 +1,12 @@
+name: banglavoice
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pysoundfile
+  - libstdcxx-ng   # newer libstdc++ for the prebuilt libomnivoice.so / libggml*.so
+  - pip
+  - pip:
+      - -r requirements.txt

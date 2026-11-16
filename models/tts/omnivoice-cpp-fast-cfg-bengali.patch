@@ -1,0 +1,317 @@
+diff --git a/src/maskgit-tts.h b/src/maskgit-tts.h
+index 2fbbe5a..3172477 100644
+--- a/src/maskgit-tts.h
++++ b/src/maskgit-tts.h
+@@ -151,7 +151,9 @@ static std::vector<int32_t> maskgit_generate(PipelineTTS *         pt,
+         return {};
+     }
+ 
+-    const int audio_start_cond = S - T;  // cond row: audio starts at c_len - T
++    const int audio_start_cond = prompt->cond_tgt;  // cond row: audio starts at c_len - T
++    const int uncond_row       = prompt->uncond_row;
++    const int uncond_tgt       = prompt->uncond_tgt;
+ 
+     std::vector<int32_t> tokens((size_t) K * (size_t) T, mask_id);
+ 
+@@ -173,7 +175,8 @@ static std::vector<int32_t> maskgit_generate(PipelineTTS *         pt,
+     // typical voice cloning shape), so building it once amortizes the cost.
+     MaskgitBatchedCtx batched_ctx;
+     pipeline_tts_llm_batched_ctx_init(&batched_ctx, prompt->audio_mask.data(), prompt->attention_mask.data(), B_prime,
+-                                      S);
++                                      S, prompt->positions.data(), audio_start_cond, uncond_row, uncond_tgt,
++                                      prompt->hard_mask);
+ 
+     for (int step = 0; step < cfg.num_step; step++) {
+         int k_demask = sched[step];
+@@ -348,8 +351,8 @@ static std::vector<int32_t> maskgit_generate(PipelineTTS *         pt,
+ 
+             // cond row: input_ids[0, k, audio_start_cond + t]
+             prompt->input_ids[((size_t) 0 * K + k) * S + (size_t) (audio_start_cond + t)] = v;
+-            // uncond row: input_ids[1, k, t]
+-            prompt->input_ids[((size_t) 1 * K + k) * S + (size_t) t]                      = v;
++            // uncond window: input_ids[uncond_row, k, uncond_tgt + t]
++            prompt->input_ids[((size_t) uncond_row * K + k) * S + (size_t) (uncond_tgt + t)] = v;
+         }
+ 
+         fprintf(stderr, "[MaskGIT-Step] %d/%d demask=%d remaining=%d\n", step + 1, cfg.num_step, k_demask,
+diff --git a/src/pipeline-tts.cpp b/src/pipeline-tts.cpp
+index 24871ac..6cf505b 100644
+--- a/src/pipeline-tts.cpp
++++ b/src/pipeline-tts.cpp
+@@ -323,12 +323,20 @@ void pipeline_tts_llm_batched_ctx_init(MaskgitBatchedCtx * ctx,
+                                        const int32_t *     audio_mask,
+                                        const int32_t *     attention_mask,
+                                        int                 B_prime,
+-                                       int                 S) {
++                                       int                 S,
++                                       const int32_t *     positions,
++                                       int                 cond_tgt,
++                                       int                 uncond_row,
++                                       int                 uncond_tgt,
++                                       bool                hard_mask) {
+     ctx->B_prime        = B_prime;
+     ctx->S              = S;
+     ctx->audio_mask_raw = audio_mask;
+     ctx->attn_mask_raw  = attention_mask;
+     ctx->has_attn_mask  = (attention_mask != NULL);
++    ctx->cond_tgt       = cond_tgt;
++    ctx->uncond_row     = uncond_row;
++    ctx->uncond_tgt     = uncond_tgt;
+ 
+     ctx->mask_f.resize((size_t) B_prime * (size_t) S);
+     ctx->inv_mask_f.resize((size_t) B_prime * (size_t) S);
+@@ -342,7 +350,7 @@ void pipeline_tts_llm_batched_ctx_init(MaskgitBatchedCtx * ctx,
+ 
+     ctx->positions.resize(S);
+     for (int i = 0; i < S; i++) {
+-        ctx->positions[i] = i;
++        ctx->positions[i] = positions ? positions[i] : i;
+     }
+ 
+     // The mask only takes two values (1.0 and 0.0). Pre-convert them once
+@@ -350,7 +358,7 @@ void pipeline_tts_llm_batched_ctx_init(MaskgitBatchedCtx * ctx,
+     // the CPU pre-compute on large S.
+     if (ctx->has_attn_mask) {
+         const uint16_t f16_one  = ggml_fp32_to_fp16(1.0f);
+-        const uint16_t f16_zero = ggml_fp32_to_fp16(0.0f);
++        const uint16_t f16_zero = ggml_fp32_to_fp16(hard_mask ? -INFINITY : 0.0f);
+         const size_t   n        = (size_t) B_prime * (size_t) S * (size_t) S;
+         ctx->attn_f16.resize(n);
+         for (size_t i = 0; i < n; i++) {
+@@ -465,14 +473,16 @@ static bool lm_batched_graph_build(PipelineTTS * pt, MaskgitBatchedCtx * ctx, in
+     struct ggml_tensor * cond_audio   = nullptr;
+     struct ggml_tensor * uncond_audio = nullptr;
+     if (T_audio > 0) {
+-        size_t               cond_offset = (size_t) (S - T_audio) * logits->nb[2] + (size_t) 0 * logits->nb[3];
++        const int            cond_tgt    = ctx->cond_tgt >= 0 ? ctx->cond_tgt : S - T_audio;
++        size_t               cond_offset = (size_t) cond_tgt * logits->nb[2] + (size_t) 0 * logits->nb[3];
+         struct ggml_tensor * cond_view =
+             ggml_view_4d(gctx, logits, V, K, T_audio, 1, logits->nb[1], logits->nb[2], logits->nb[3], cond_offset);
+         cond_audio = ggml_cont(gctx, cond_view);
+         ggml_set_name(cond_audio, "cond_audio_logits");
+         ggml_set_output(cond_audio);
+ 
+-        size_t               uncond_offset = (size_t) 0 * logits->nb[2] + (size_t) 1 * logits->nb[3];
++        size_t               uncond_offset =
++            (size_t) ctx->uncond_tgt * logits->nb[2] + (size_t) ctx->uncond_row * logits->nb[3];
+         struct ggml_tensor * uncond_view =
+             ggml_view_4d(gctx, logits, V, K, T_audio, 1, logits->nb[1], logits->nb[2], logits->nb[3], uncond_offset);
+         uncond_audio = ggml_cont(gctx, uncond_view);
+@@ -696,14 +706,21 @@ std::vector<int32_t> pipeline_tts_generate(PipelineTTS *         pt,
+         return {};
+     }
+ 
++    // Pack cond + uncond into one sequence (skips the uncond pad slots). The
++    // debug dumps assume the padded two-row layout, and OV_CFG_PACK=0 restores
++    // it for A/B checks.
++    const char * pack_env = getenv("OV_CFG_PACK");
++    const bool   packed   = dump_dir == nullptr && !(pack_env && pack_env[0] == '0');
++
+     PromptTTS prompt = {};
+-    if (!prompt_tts_build(&prompt, tok, &pt->lm, text, lang, instruct, T, denoise, ref_text, ref_audio_tokens, ref_T)) {
++    if (!prompt_tts_build(&prompt, tok, &pt->lm, text, lang, instruct, T, denoise, ref_text, ref_audio_tokens, ref_T,
++                          packed)) {
+         return {};
+     }
+ 
+     // Dump cond and uncond input_ids row k=0 for prompt diagnostic. Style and
+     // text tokens are duplicated across all K codebooks so k=0 is enough.
+-    {
++    if (!packed) {
+         DebugDumper dbg;
+         debug_init(&dbg, dump_dir);
+         int             ids_shape[1] = { prompt.c_len };
+diff --git a/src/pipeline-tts.h b/src/pipeline-tts.h
+index 07fb8c9..c399de5 100644
+--- a/src/pipeline-tts.h
++++ b/src/pipeline-tts.h
+@@ -86,6 +86,11 @@ struct MaskgitBatchedCtx {
+     std::vector<uint16_t> attn_f16;    // [B', S, S], empty when no mask
+     bool                  has_attn_mask;
+ 
++    // Target windows read back as cond / uncond logits (see PromptTTS).
++    int cond_tgt   = 0;
++    int uncond_row = 1;
++    int uncond_tgt = 0;
++
+     const int32_t * audio_mask_raw;
+     const int32_t * attn_mask_raw;
+ 
+@@ -114,12 +119,20 @@ struct MaskgitBatchedCtx {
+ 
+ // Pre-compute the batched context from the prompt buffers. The original
+ // int32 pointers must stay valid for the lifetime of the context (the
+-// debug loop path reads them directly).
++// debug loop path reads them directly). positions NULL means 0..S-1.
++// cond_tgt / uncond_row / uncond_tgt locate the target windows; when
++// cond_tgt < 0 the padded layout defaults apply (S - T on row 0, 0 on row 1).
++// hard_mask maps blocked entries to -inf instead of the 0.0 soft bias.
+ void pipeline_tts_llm_batched_ctx_init(MaskgitBatchedCtx * ctx,
+                                        const int32_t *     audio_mask,
+                                        const int32_t *     attention_mask,
+                                        int                 B_prime,
+-                                       int                 S);
++                                       int                 S,
++                                       const int32_t *     positions  = nullptr,
++                                       int                 cond_tgt   = -1,
++                                       int                 uncond_row = 1,
++                                       int                 uncond_tgt = 0,
++                                       bool                hard_mask  = false);
+ 
+ // Batched version: runs B' independent forwards (cond + uncond stacked).
+ // input_ids  [B', K, S]      row-major (b slow, k mid, s fast). Mutates
+diff --git a/src/prompt-tts.h b/src/prompt-tts.h
+index da0914c..ab632b3 100644
+--- a/src/prompt-tts.h
++++ b/src/prompt-tts.h
+@@ -33,6 +33,23 @@ struct PromptTTS {
+     std::vector<int32_t> input_ids;       // [B', K, S_max]
+     std::vector<int32_t> audio_mask;      // [B', S_max]
+     std::vector<int32_t> attention_mask;  // [B', S_max, S_max]
++    std::vector<int32_t> positions;       // [S_max] RoPE positions, shared by every row
++
++    // Target windows. Padded layout (B'=2): cond on row 0 at [c_len - u_len, c_len),
++    // uncond on row 1 at [0, u_len), uncond row padded to c_len. Packed layout
++    // (B'=1): both on row 0, uncond appended at [c_len, c_len + u_len) behind a
++    // block-diagonal mask with positions restarting at 0, so it skips the
++    // c_len - u_len pad slots of the padded uncond row.
++    int cond_tgt;    // column of the cond target window (row 0)
++    int uncond_row;  // row holding the uncond window
++    int uncond_tgt;  // column of the uncond target window
++
++    // Mask semantics. false: attention_mask is the +1/0 additive bias of the
++    // PyTorch eager path (blocked keys still enter the softmax). true: hard
++    // mask, blocked keys get -inf, matching the upstream SDPA / flex_attention
++    // path. Packing needs it: under the soft bias the two packed segments
++    // would leak into each other.
++    bool hard_mask;
+ };
+ 
+ // 13 non-verbal tags from the reference NONVERBAL_PATTERN.
+@@ -222,7 +239,8 @@ static bool prompt_tts_build(PromptTTS *          out,
+                              bool                 denoise,
+                              const std::string &  ref_text,
+                              const int32_t *      ref_audio_tokens,
+-                             int                  ref_T) {
++                             int                  ref_T,
++                             bool                 packed = false) {
+     if (num_target_tokens <= 0) {
+         fprintf(stderr, "[Prompt] FATAL: num_target_tokens must be positive (got %d)\n", num_target_tokens);
+         return false;
+@@ -233,7 +251,7 @@ static bool prompt_tts_build(PromptTTS *          out,
+     }
+     *out         = {};
+     out->B       = 1;
+-    out->B_prime = 2;
++    out->B_prime = packed ? 1 : 2;
+     out->K       = lm->num_audio_codebook;
+ 
+     std::string style_text;
+@@ -265,19 +283,33 @@ static bool prompt_tts_build(PromptTTS *          out,
+     const int K       = out->K;
+     const int mask_id = lm->audio_mask_id;
+ 
+-    out->c_len = c_len;
+-    out->u_len = u_len;
+-    out->S_max = c_len;
++    const int S = packed ? c_len + u_len : c_len;
++
++    out->c_len      = c_len;
++    out->u_len      = u_len;
++    out->S_max      = S;
++    out->cond_tgt   = c_len - Stgt;
++    out->uncond_row = packed ? 0 : 1;
++    out->uncond_tgt = packed ? c_len : 0;
++    out->hard_mask  = packed;
+ 
+-    out->input_ids.assign((size_t) out->B_prime * (size_t) K * (size_t) c_len, mask_id);
+-    out->audio_mask.assign((size_t) out->B_prime * (size_t) c_len, 0);
+-    out->attention_mask.assign((size_t) out->B_prime * (size_t) c_len * (size_t) c_len, 0);
++    out->input_ids.assign((size_t) out->B_prime * (size_t) K * (size_t) S, mask_id);
++    out->audio_mask.assign((size_t) out->B_prime * (size_t) S, 0);
++    out->attention_mask.assign((size_t) out->B_prime * (size_t) S * (size_t) S, 0);
++
++    // RoPE only sees relative offsets inside each attention block, so restarting
++    // the packed uncond segment at 0 reproduces the padded row exactly.
++    out->positions.resize(S);
++    for (int s = 0; s < S; s++) {
++        out->positions[s] = s < c_len ? s : s - c_len;
++    }
+ 
+     auto cond_at = [&](int k, int s) -> int32_t & {
+-        return out->input_ids[((size_t) 0 * K + (size_t) k) * (size_t) c_len + (size_t) s];
++        return out->input_ids[((size_t) 0 * K + (size_t) k) * (size_t) S + (size_t) s];
+     };
+     auto uncond_at = [&](int k, int s) -> int32_t & {
+-        return out->input_ids[((size_t) 1 * K + (size_t) k) * (size_t) c_len + (size_t) s];
++        return out->input_ids[((size_t) out->uncond_row * K + (size_t) k) * (size_t) S + (size_t) out->uncond_tgt +
++                              (size_t) s];
+     };
+ 
+     // Style + text tokens are duplicated across all K codebooks (the reference
+@@ -306,7 +338,7 @@ static bool prompt_tts_build(PromptTTS *          out,
+ 
+     // Cond audio_mask covers ref_audio + target window, all in one block.
+     for (int s = audio_start; s < c_len; s++) {
+-        out->audio_mask[(size_t) 0 * (size_t) c_len + (size_t) s] = 1;
++        out->audio_mask[(size_t) 0 * (size_t) S + (size_t) s] = 1;
+     }
+ 
+     // Uncond row holds only the trailing target window (Stgt mask slots),
+@@ -317,29 +349,33 @@ static bool prompt_tts_build(PromptTTS *          out,
+         }
+     }
+     for (int s = 0; s < u_len; s++) {
+-        out->audio_mask[(size_t) 1 * (size_t) c_len + (size_t) s] = 1;
++        out->audio_mask[(size_t) out->uncond_row * (size_t) S + (size_t) out->uncond_tgt + (size_t) s] = 1;
+     }
+ 
+     auto attn_at = [&](int b, int sq, int skv) -> int32_t & {
+-        return out->attention_mask[((size_t) b * (size_t) c_len + (size_t) sq) * (size_t) c_len + (size_t) skv];
++        return out->attention_mask[((size_t) b * (size_t) S + (size_t) sq) * (size_t) S + (size_t) skv];
+     };
+ 
+-    // Cond row: full bidirectional attention on the c_len window.
++    // Cond block: full bidirectional attention on the c_len window.
+     for (int sq = 0; sq < c_len; sq++) {
+         for (int skv = 0; skv < c_len; skv++) {
+             attn_at(0, sq, skv) = 1;
+         }
+     }
+ 
+-    // Uncond row: full bidirectional inside the u_len target window, diagonal
+-    // pads on the trailing positions [u_len, c_len).
++    // Uncond block: full bidirectional inside the u_len target window.
++    const int ub = out->uncond_row;
++    const int u0 = out->uncond_tgt;
+     for (int sq = 0; sq < u_len; sq++) {
+         for (int skv = 0; skv < u_len; skv++) {
+-            attn_at(1, sq, skv) = 1;
++            attn_at(ub, u0 + sq, u0 + skv) = 1;
+         }
+     }
+-    for (int sq = u_len; sq < c_len; sq++) {
+-        attn_at(1, sq, sq) = 1;
++    // Padded layout only: diagonal pads on the trailing positions [u_len, c_len).
++    if (!packed) {
++        for (int sq = u_len; sq < c_len; sq++) {
++            attn_at(1, sq, sq) = 1;
++        }
+     }
+ 
+     fprintf(stderr, "[Prompt] Built: B'=%d K=%d S=%d N1=%d N2=%d Sref=%d Stgt=%d c_len=%d u_len=%d denoise=%d\n",
+diff --git a/src/text-chunker.h b/src/text-chunker.h
+index ff39ae7..1074cf6 100644
+--- a/src/text-chunker.h
++++ b/src/text-chunker.h
+@@ -49,6 +49,10 @@ static const std::set<std::string> & chunker_split_punctuation() {
+         "\xef\xbc\x9a",  // U+FF1A fullwidth colon
+         "\xef\xbc\x81",  // U+FF01 fullwidth exclamation mark
+         "\xef\xbc\x9f",  // U+FF1F fullwidth question mark
++        // Not in upstream text.py: without these, Bengali / Hindi text is one
++        // unsplittable sentence and long-form or streaming input never chunks.
++        "\xe0\xa5\xa4",  // U+0964 devanagari danda
++        "\xe0\xa5\xa5",  // U+0965 devanagari double danda
+     };
+     return s;
+ }
