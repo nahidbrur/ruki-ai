@@ -1,4 +1,4 @@
-# BanglaVoice
+# Ruki
 
 **Ruki** is a real-time Bangla voice assistant. Talk to it in Bangla and it talks back. It listens through the
 browser microphone, understands you with a local speech recognizer, answers with Gemini or an Ollama model, and
@@ -57,11 +57,12 @@ when you interrupt.
 ## Quick start
 
 ```bash
-cd BanglaVoice
+git clone https://github.com/nahidbrur/ruki-ai.git
+cd ruki-ai
 conda env create -f environment.yml
 conda activate banglavoice
 cp .env.example .env              # then put your key(s) in GEMINI_API_KEYS
-python -m banglavoice.server      # open http://localhost:8000
+python -m ruki.server      # open http://localhost:8000
 ```
 
 Click the microphone and allow microphone access. Ruki greets you; then speak Bangla.
@@ -102,7 +103,7 @@ likely to change:
 | `OLLAMA_URL`, `OLLAMA_MODEL` | `http://localhost:11434`, none | The Ollama server and model |
 | `GEMINI_API_KEYS` | (required for Gemini) | One key, or several as a JSON list or comma-separated; the next key is used when one hits its quota |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any model your key can use (`python scripts/check_gemini.py` lists them) |
-| `SYSTEM_PROMPT` | Ruki's persona | Who Ruki is and how it answers (see [config.py](banglavoice/config.py)) |
+| `SYSTEM_PROMPT` | Ruki's persona | Who Ruki is and how it answers (see [config.py](ruki/config.py)) |
 | `WELCOME_MESSAGE` | “{time_greeting}আমি রুকি। …” | Spoken when a conversation starts; leave empty for no greeting. `{time_greeting}` becomes good morning / afternoon / evening / night by the user's local time |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also shows each turn's timing breakdown and the model names in the UI |
 | `TTS_DEVICE` | `Vulkan1` | The Vulkan device for the TTS (`Vulkan0`, `Vulkan1`, …) or `CPU` |
@@ -186,8 +187,8 @@ into `models/tts/lib/`.
 ## Project layout
 
 ```
-BanglaVoice/
-├── banglavoice/
+ruki-ai/
+├── ruki/
 │   ├── server.py              FastAPI app: web UI, /api/info, voice cloning API, WebSocket /ws
 │   ├── session.py             one conversation: the four stage threads, history, greeting, interruptions
 │   ├── config.py              settings from .env, Ruki's system prompt and welcome message
@@ -216,7 +217,7 @@ python scripts/check_gemini.py                               # which Gemini mode
 
 ## WebSocket protocol
 
-The full protocol is in the docstring of [banglavoice/server.py](banglavoice/server.py). In short: the client
+The full protocol is in the docstring of [ruki/server.py](ruki/server.py). In short: the client
 sends `{"type": "start", ...}` and then binary 16 kHz float32 microphone audio. The server sends JSON events
 (`status`, `vad`, `user_text`, `assistant_delta`, `audio_start`, `assistant_done`, `interrupt`, `error`) and
 binary 24 kHz int16 audio. Typed messages, settings changes, interrupt and reset are JSON messages from the client.

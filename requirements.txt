@@ -1,4 +1,4 @@
-# BanglaVoice: Python 3.11, Linux x86-64. Versions are the ones the pipeline was tested with.
+# Ruki: Python 3.11, Linux x86-64. Versions are the ones the pipeline was tested with.
 # Create the env with environment.yml (conda-forge supplies the libstdc++ that libomnivoice.so needs),
 # or: conda create -n banglavoice -c conda-forge python=3.11 numpy scipy pysoundfile libstdcxx-ng
 #     pip install -r requirements.txt

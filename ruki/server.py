@@ -47,7 +47,7 @@ from .config import ROOT, Settings
 from .llm.manager import LLMRouter, list_models as list_llm_models, parse_keys
 from .session import Models, Session, SessionOptions
 
-logger = logging.getLogger("banglavoice")
+logger = logging.getLogger("ruki")
 WEB = ROOT / "web"
 USER_VOICES = "user"            # voices/user/: voices cloned from the web UI
 MAX_CLONE_S, MIN_CLONE_S = 20.0, 2.0
@@ -100,7 +100,7 @@ def create_app(settings: Settings) -> FastAPI:
         yield
         state["models"].tts.close()
 
-    app = FastAPI(title="BanglaVoice", lifespan=lifespan)
+    app = FastAPI(title="Ruki", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB), name="static")
 
     @app.get("/")
@@ -302,7 +302,7 @@ def create_app(settings: Settings) -> FastAPI:
 
 def main() -> None:
     settings = Settings()
-    ap = argparse.ArgumentParser(description="BanglaVoice real-time speech-to-speech server")
+    ap = argparse.ArgumentParser(description="Ruki real-time speech-to-speech server")
     ap.add_argument("--host", default=settings.host)
     ap.add_argument("--port", type=int, default=settings.port)
     ap.add_argument("--tts-device", default=settings.tts_device, help="Vulkan1 (RTX 2050), Vulkan0 (iGPU) or CPU")

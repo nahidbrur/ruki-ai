@@ -19,9 +19,9 @@ from scipy.signal import resample_poly
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from banglavoice.config import Settings  # noqa: E402
-from banglavoice.server import setup_logging  # noqa: E402
-from banglavoice.session import Models, Session, SessionOptions  # noqa: E402
+from ruki.config import Settings  # noqa: E402
+from ruki.server import setup_logging  # noqa: E402
+from ruki.session import Models, Session, SessionOptions  # noqa: E402
 
 
 class FakeLLM:
@@ -61,13 +61,13 @@ def main():
 
     s = Settings()
     setup_logging(s.log_level)
-    from banglavoice.stt.hima import HimaASR
-    from banglavoice.tts.omnivoice import OmniVoiceEngine
+    from ruki.stt.hima import HimaASR
+    from ruki.tts.omnivoice import OmniVoiceEngine
 
     if args.fake_llm:
         llm = FakeLLM()
     else:
-        from banglavoice.llm.gemini import GeminiChat
+        from ruki.llm.gemini import GeminiChat
         llm = GeminiChat(s.gemini_api_keys, s.gemini_model, s.system_prompt, s.gemini_thinking, s.gemini_max_tokens)
     asr = HimaASR(s.asr_dir, threads=s.asr_threads, language=s.asr_language)
     tts = OmniVoiceEngine(s.tts_dir, device=s.tts_device)

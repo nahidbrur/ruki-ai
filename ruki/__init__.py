@@ -1,4 +1,4 @@
-"""BanglaVoice: real-time Bangla speech-to-speech conversation.
+"""Ruki: real-time Bangla speech-to-speech conversation.
 
 Pipeline (one per WebSocket session), modelled on huggingface/speech-to-speech:
 

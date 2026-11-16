@@ -1,4 +1,4 @@
-// BanglaVoice web client: microphone -> WebSocket (16 kHz float32) and streamed 24 kHz PCM -> speakers.
+// Ruki web client: microphone -> WebSocket (16 kHz float32) and streamed 24 kHz PCM -> speakers.
 "use strict";
 
 const $ = (id) => document.getElementById(id);

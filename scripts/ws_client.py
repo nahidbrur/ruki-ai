@@ -1,4 +1,4 @@
-"""Talk to a running BanglaVoice server over its WebSocket, like the browser does, using WAV files as the mic.
+"""Talk to a running Ruki server over its WebSocket, like the browser does, using WAV files as the mic.
 
     python scripts/ws_client.py q1.wav q2.wav --url ws://localhost:8000/ws
 
