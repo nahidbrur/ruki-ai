@@ -12,6 +12,9 @@ models/**/*.gguf
 models/**/*.so*
 models/asr/hima-asr-onnx/tokenizer.json
 
+# --- Voices cloned from the web UI (personal recordings) ---
+voices/user/
+
 # --- Generated audio and logs ---
 outputs/
 *.log

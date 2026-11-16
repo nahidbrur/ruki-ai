@@ -2,12 +2,14 @@
 
 WebSocket protocol (/ws)
   client -> server
-    {"type": "start", "voice": "speaker_1", "allow_interruptions": true, "tts_steps": 16}   first message
+    {"type": "start", "voice": "speaker_1", "allow_interruptions": true, "tts_steps": 16,
+     "hour"?: 0-23, "history"?: [{"role": "user"|"assistant", "text"}]}   first message; with a history (the chat on screen
+                                                           when the mic is turned on again) there is no greeting
     binary: 16 kHz mono float32 little-endian microphone audio, any length (512 samples is typical)
     {"type": "text", "text": "..."}              typed message (skips VAD + ASR)
     {"type": "config", "voice"?, "allow_interruptions"?, "tts_steps"?}
     {"type": "interrupt"}                        stop the assistant now
-    {"type": "reset"}                            forget the conversation (and greet again)
+    {"type": "reset", "hour"?: 0-23}             forget the conversation (and greet again)
   server -> client
     {"type": "ready", ...}, then the welcome message as an ordinary reply (assistant_delta + audio)
     {"type": "status", "state": listening|transcribing|thinking|speaking}
@@ -23,9 +25,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import io
 import json
 import logging
 import os
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -33,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +47,8 @@ from .session import Models, Session, SessionOptions
 
 logger = logging.getLogger("banglavoice")
 WEB = ROOT / "web"
+USER_VOICES = "user"            # voices/user/: voices cloned from the web UI
+MAX_CLONE_S, MIN_CLONE_S = 20.0, 2.0
 
 
 def setup_logging(level: str) -> None:
@@ -73,6 +80,8 @@ def load_models(settings: Settings) -> Models:
     t = time.perf_counter()
     tts = OmniVoiceEngine(settings.tts_dir, device=settings.tts_device)
     voices = tts.load_voices_dir(settings.voices_dir)
+    if (settings.voices_dir / USER_VOICES).is_dir():
+        voices = tts.load_voices_dir(settings.voices_dir / USER_VOICES)
     if not voices:
         raise RuntimeError(f"no voices in {settings.voices_dir} (need <name>.wav + <name>.txt)")
     if settings.default_voice not in voices:
@@ -111,6 +120,69 @@ def create_app(settings: Settings) -> FastAPI:
             "tts": f"OmniVoice Q8_0 (omnivoice.cpp, {settings.tts_device})",
         })
 
+    def _clip(body: dict) -> np.ndarray:
+        """The uploaded reference clip (base64 WAV; the browser sends 24 kHz mono 16-bit) as 24 kHz float32."""
+        import soundfile as sf
+        from scipy.signal import resample_poly
+
+        try:
+            audio, sr = sf.read(io.BytesIO(base64.b64decode(body["audio"])), dtype="float32", always_2d=True)
+        except Exception:
+            raise HTTPException(400, "Could not read the audio. Upload a WAV, MP3, M4A or OGG file.")
+        audio = audio.mean(1)
+        if sr != 24000:
+            g = np.gcd(sr, 24000)
+            audio = resample_poly(audio, 24000 // g, sr // g).astype(np.float32)
+        secs = len(audio) / 24000
+        if not MIN_CLONE_S <= secs <= MAX_CLONE_S:
+            raise HTTPException(400, f"The clip is {secs:.1f} s long; use {MIN_CLONE_S:.0f}-{MAX_CLONE_S:.0f} s of speech.")
+        return audio
+
+    @app.post("/api/transcribe")
+    async def transcribe(body: dict = Body(...)):
+        """Transcript of an uploaded reference clip, to pre-fill the voice-cloning form."""
+        from scipy.signal import resample_poly
+
+        audio = _clip(body)
+        text = await asyncio.to_thread(state["models"].asr.transcribe, resample_poly(audio, 2, 3).astype(np.float32))
+        return {"text": text.strip()}
+
+    @app.post("/api/voices")
+    async def add_voice(body: dict = Body(...)):
+        """Clone a voice: save voices/user/<name>.wav + .txt and register it with the TTS."""
+        import soundfile as sf
+
+        models: Models = state["models"]
+        transcript = str(body.get("transcript", "")).strip()
+        if not transcript or len(transcript) > 600:
+            raise HTTPException(400, "Enter the exact words spoken in the clip (up to 600 characters).")
+        base = re.sub(r"[\s/\\.:]+", "_", str(body.get("name", "")).strip()).strip("_")[:40] or "my_voice"
+        name, n = base, 2
+        while name in models.tts.voices:  # never replace a voice another session may be using
+            name, n = f"{base}_{n}", n + 1
+        audio = _clip(body)
+        folder = settings.voices_dir / USER_VOICES
+        folder.mkdir(parents=True, exist_ok=True)
+        wav = folder / f"{name}.wav"
+        sf.write(wav, audio, 24000, subtype="PCM_16")
+        (folder / f"{name}.txt").write_text(transcript + "\n", encoding="utf-8")
+        try:
+            secs = await asyncio.to_thread(models.tts.add_voice, name, wav, transcript)
+        except Exception as e:
+            wav.unlink(missing_ok=True)
+            (folder / f"{name}.txt").unlink(missing_ok=True)
+            logger.exception("voice cloning failed")
+            raise HTTPException(500, f"Could not create the voice: {e}")
+        logger.info("voice %s cloned from the web UI (%.1f s reference)", name, secs)
+        return {"name": name, "voices": list(models.tts.voices)}
+
+    def _hour(msg: dict) -> int | None:
+        """The user's local hour, sent by the browser with "start" and "reset"."""
+        try:
+            return int(msg["hour"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         await ws.accept()
@@ -142,10 +214,12 @@ def create_app(settings: Settings) -> FastAPI:
                 tts_steps=int(start.get("tts_steps") or settings.tts_steps),
             )
             session = await asyncio.to_thread(Session, models, settings, options, send)
+            restored = session.restore_history(start.get("history") or [])
             send({"type": "ready", "voice": options.voice, "allow_interruptions": options.allow_interruptions,
                   "tts_steps": options.tts_steps})
-            logger.info("session started: %s", options)
-            session.greet()
+            logger.info("session started: %s, %d messages restored", options, restored)
+            if not restored:
+                session.greet(_hour(start))
             while True:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
@@ -170,7 +244,7 @@ def create_app(settings: Settings) -> FastAPI:
                         session.interrupt("reset")
                         with session._lock:
                             session.history.clear()
-                        session.greet()
+                        session.greet(_hour(cmd))
                     elif kind == "stop":
                         break
         except WebSocketDisconnect:

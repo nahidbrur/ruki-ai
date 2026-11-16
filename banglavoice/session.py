@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .config import Settings
+from .config import Settings, time_greeting
 from .llm.text import SentenceChunker
 from .pipeline.base_handler import drain
 from .pipeline.handlers import LLMHandler, STTHandler, TTSHandler, VADHandler
@@ -98,10 +98,12 @@ class Session:
         self.emit({"type": "user_text", "turn_id": turn, "text": text, "typed": True})
         self.q_llm.put(UserText(text=text, turn_id=turn, generation=gen, timings=TurnTimings()))
 
-    def greet(self) -> None:
+    def greet(self, hour: int | None = None) -> None:
         """Speak the welcome message (straight to TTS, no LLM) and keep it in the history, so the LLM
-        knows it has already greeted the user."""
-        text = self.settings.welcome_message
+        knows it has already greeted the user. `hour` is the user's local hour (0-23), for {time_greeting}."""
+        if hour is None or not 0 <= hour <= 23:
+            hour = time.localtime().tm_hour  # the client did not say: use the server's clock
+        text = self.settings.welcome_message.replace("{time_greeting}", time_greeting(hour)).strip()
         if not text:
             return
         gen = self.cancel_scope.generation
@@ -115,6 +117,23 @@ class Session:
         for sentence in [*chunker.push(text), *chunker.flush()]:
             self.q_tts.put(TTSChunk(sentence, turn, gen, timings))
         self.q_tts.put(EndOfResponse(turn, gen, timings))
+
+    def restore_history(self, messages: list) -> int:
+        """Seed the history with the chat the client still shows (the mic was turned off and on again)."""
+        keep: list[dict] = []
+        for m in messages[-2 * self.settings.max_history_turns:]:
+            if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
+                continue
+            text = str(m.get("text", "")).strip()[:2000]
+            if not text:
+                continue
+            if keep and keep[-1]["role"] == m["role"]:
+                keep[-1]["text"] += " " + text
+            else:
+                keep.append({"role": m["role"], "text": text, "gen": None})
+        with self._lock:
+            self.history[:] = keep
+        return len(keep)
 
     def update_options(self, **changes: Any) -> None:
         for k, v in changes.items():

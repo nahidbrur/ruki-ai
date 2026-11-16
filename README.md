@@ -10,13 +10,15 @@ with a local voice-cloning TTS while it is still being written.
 
 - **Spoken conversation in Bangla.** Speech recognition and speech synthesis run locally; only the text goes to
   Gemini.
-- **Greets you first.** When you turn on the microphone, Ruki opens with a welcome
-  (“আচ্ছালামু আলাইকুম! আমি রুকি। …”) and then listens.
+- **Greets you first.** When you turn on the microphone, Ruki opens with a welcome that fits the time of day
+  on your computer (“শুভ সকাল! আমি রুকি। …”) and then listens.
 - **Natural turn taking.** A pause ends your turn. You can interrupt Ruki mid-sentence (barge-in) and it stops
   and listens.
 - **Streaming replies.** Speech starts after the first sentence of the answer, not after the whole answer.
 - **Typed messages** work alongside voice.
-- **Selectable voices.** Any short clean recording plus its transcript becomes a voice.
+- **Remembers the conversation.** Each reply takes the recent conversation into account, also after the
+  microphone is turned off and on again.
+- **Voice cloning from the browser.** Upload a short recording in Settings and Ruki speaks in that voice.
 - **Light and dark mode**, with a switch in the top-right corner.
 - **Debug view** (`LOG_LEVEL=DEBUG`): each turn shows its timing breakdown, and the header lists the models.
 
@@ -83,6 +85,7 @@ Everything else is set in `.env`.
 | Stop speaking | Stops the current reply |
 | New conversation | Clears the history; Ruki greets you again |
 | Message box | Type instead of speaking |
+| Gear button | Settings: clone a new voice from a recording |
 | Sun/moon switch | Light or dark mode; your choice is remembered |
 
 ![Ruki in dark mode](docs/screenshots/conversation-dark.png)
@@ -97,11 +100,12 @@ likely to change:
 | `GEMINI_API_KEYS` | (required) | One key, or several as a JSON list or comma-separated; the next key is used when one hits its quota |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any model your key can use (`python scripts/check_gemini.py` lists them) |
 | `SYSTEM_PROMPT` | Ruki's persona | Who Ruki is and how it answers (see [config.py](banglavoice/config.py)) |
-| `WELCOME_MESSAGE` | “আচ্ছালামু আলাইকুম! আমি রুকি। …” | Spoken when a conversation starts; leave empty for no greeting |
+| `WELCOME_MESSAGE` | “{time_greeting}আমি রুকি। …” | Spoken when a conversation starts; leave empty for no greeting. `{time_greeting}` becomes good morning / afternoon / evening / night by the user's local time |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also shows each turn's timing breakdown and the model names in the UI |
 | `TTS_DEVICE` | `Vulkan1` | The Vulkan device for the TTS (`Vulkan0`, `Vulkan1`, …) or `CPU` |
 | `TTS_STEPS` | `16` | Default TTS quality (8, 12, 16 or 32) |
 | `DEFAULT_VOICE` | `speaker_1` | The voice selected when the page opens |
+| `MAX_HISTORY_TURNS` | `12` | How many recent exchanges (your message + Ruki's reply) are sent to the LLM with each message |
 | `VAD_MIN_SILENCE_MS` | `600` | Silence that ends your turn: lower answers sooner, higher cuts you off less |
 | `ALLOW_INTERRUPTIONS` | `true` | Default for the interruptions checkbox |
 | `BARGE_IN_MIN_MS`, `BARGE_IN_THRESHOLD` | `350`, `0.7` | How long and how clearly you must speak to interrupt Ruki |
@@ -118,11 +122,24 @@ likely to change:
   conversation history matches what you heard.
 - **No interruptions** (`--no-interruptions`, or untick the box): the microphone is ignored while Ruki speaks.
 
+## Conversation memory
+
+Ruki keeps the conversation of the current chat. With each message, the most recent `MAX_HISTORY_TURNS`
+exchanges are sent to the LLM along with it, so follow-up questions work ("what did I just say my name was?").
+Turning the microphone off and on keeps the chat: the browser sends the messages on screen to the new session,
+and Ruki continues without greeting again. **New conversation** clears the memory, and Ruki greets you again.
+
 ## Voices
 
 Every `voices/<name>.wav` that has a matching `voices/<name>.txt` transcript is loaded at start-up and listed
-in the UI. For a new voice, use 3-10 seconds of one clean speaker and the exact transcript of what is said; a
-longer recording makes every reply slower.
+in the UI. Use 3-10 seconds of one clean speaker and the exact transcript of what is said; a longer recording
+makes every reply slower.
+
+**Cloning a voice in the browser:** open Settings (the gear button), upload a recording (WAV, MP3, M4A, OGG…),
+and check the transcript, which is filled in automatically by the speech recognizer and may contain mistakes.
+Then click **Create voice**. The browser trims silence and keeps at most 15 seconds. The new voice is saved
+in `voices/user/` (kept out of git), selected right away, and available after restarts. Only clone voices you
+have permission to use.
 
 ## Models
 
@@ -145,7 +162,7 @@ into `models/tts/lib/`.
 ```
 BanglaVoice/
 ├── banglavoice/
-│   ├── server.py              FastAPI app: web UI, /api/info, WebSocket /ws (one session per connection)
+│   ├── server.py              FastAPI app: web UI, /api/info, voice cloning API, WebSocket /ws
 │   ├── session.py             one conversation: the four stage threads, history, greeting, interruptions
 │   ├── config.py              settings from .env, Ruki's system prompt and welcome message
 │   ├── pipeline/              stage base class, the four handlers, the messages between them
@@ -155,7 +172,7 @@ BanglaVoice/
 │   └── tts/omnivoice.py       OmniVoice via omnivoice.cpp
 ├── web/                       index.html, app.js, style.css, microphone and playback audio worklets
 ├── models/                    see Models
-├── voices/                    reference voices: <name>.wav + <name>.txt
+├── voices/                    reference voices: <name>.wav + <name>.txt (user/: voices cloned in the UI)
 ├── scripts/                   test and diagnostic tools (see below)
 ├── docs/screenshots/
 └── .env.example, requirements.txt, environment.yml
@@ -177,6 +194,9 @@ The full protocol is in the docstring of [banglavoice/server.py](banglavoice/ser
 sends `{"type": "start", ...}` and then binary 16 kHz float32 microphone audio. The server sends JSON events
 (`status`, `vad`, `user_text`, `assistant_delta`, `audio_start`, `assistant_done`, `interrupt`, `error`) and
 binary 24 kHz int16 audio. Typed messages, settings changes, interrupt and reset are JSON messages from the client.
+
+Voice cloning uses two HTTP endpoints: `POST /api/transcribe` (a base64 WAV; returns the recognized text) and
+`POST /api/voices` (name, transcript and base64 WAV; saves and registers the voice).
 
 ## Troubleshooting
 

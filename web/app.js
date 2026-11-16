@@ -163,8 +163,18 @@ function onMessage(ev) {
   setState();
 }
 
+// The conversation shown in the chat, oldest first (sent when the mic is turned on again).
+function chatHistory() {
+  return [...log.querySelectorAll(".msg")]
+    .map((el) => ({ role: el.classList.contains("user") ? "user" : "assistant", text: el.querySelector(".bubble").textContent.trim() }))
+    .filter((m) => m.text);
+}
+
 // ---------------------------------------------------------------------------- start / stop
 async function start() {
+  // a new server session numbers its turns from 1 again: forget the old ids (the messages stay on screen)
+  turns.clear();
+  currentBotTurn = null;
   serverState = "connecting";
   ws = { readyState: 0 }; // placeholder so setState shows "connecting"
   setState();
@@ -192,6 +202,8 @@ async function start() {
     ws = sock;
     ws.send(JSON.stringify({
       type: "start", voice: voiceSel.value, tts_steps: Number(stepsSel.value), allow_interruptions: interruptChk.checked,
+      history: chatHistory(), // the chat still on screen: Ruki keeps its context (and does not greet again)
+      hour: new Date().getHours(), // local time on this machine: good morning / afternoon / evening
     }));
 
     const src = micCtx.createMediaStreamSource(micStream);
@@ -239,7 +251,7 @@ function sendConfig() {
 orb.addEventListener("click", () => (ws ? stop() : start()));
 stopTalkBtn.addEventListener("click", () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: "interrupt" })));
 $("reset").addEventListener("click", () => {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reset" }));
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reset", hour: new Date().getHours() }));
   turns.clear();
   currentBotTurn = null;
   log.querySelectorAll(".msg, .notice").forEach((el) => el.remove());
@@ -252,6 +264,104 @@ $("composer").addEventListener("submit", (e) => {
   if (!text || !ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: "text", text }));
   textIn.value = "";
+});
+
+// ---------------------------------------------------------------------------- settings: voice cloning
+const settingsDlg = $("settings"), cloneFile = $("cloneFile"), clonePreview = $("clonePreview");
+const cloneText = $("cloneText"), cloneName = $("cloneName"), cloneStatus = $("cloneStatus"), cloneBtn = $("cloneBtn");
+const CLONE_RATE = 24000, CLONE_MAX_S = 15;
+let cloneAudio = null; // base64 WAV of the prepared clip
+
+$("settingsBtn").addEventListener("click", () => settingsDlg.showModal());
+$("settingsClose").addEventListener("click", () => settingsDlg.close());
+settingsDlg.addEventListener("click", (e) => { if (e.target === settingsDlg) settingsDlg.close(); }); // backdrop
+
+function cloneMsg(text, kind = "") { cloneStatus.textContent = text; cloneStatus.className = `clone-status ${kind}`; }
+function updateCloneBtn() { cloneBtn.disabled = !(cloneAudio && cloneText.value.trim()); }
+cloneText.addEventListener("input", updateCloneBtn);
+
+// Any audio file the browser can decode -> 24 kHz mono, silence trimmed at both ends, at most CLONE_MAX_S.
+async function prepareClip(file) {
+  const ctx = new OfflineAudioContext(1, 1, CLONE_RATE);
+  const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+  const x = new Float32Array(buf.length);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const ch = buf.getChannelData(c);
+    for (let i = 0; i < x.length; i++) x[i] += ch[i] / buf.numberOfChannels;
+  }
+  let peak = 0;
+  for (const v of x) peak = Math.max(peak, Math.abs(v));
+  const thr = peak * 0.05, pad = Math.round(0.15 * CLONE_RATE);
+  let a = 0, b = x.length - 1;
+  while (a < b && Math.abs(x[a]) < thr) a++;
+  while (b > a && Math.abs(x[b]) < thr) b--;
+  a = Math.max(0, a - pad);
+  b = Math.min(x.length, b + pad, a + CLONE_MAX_S * CLONE_RATE);
+  return x.subarray(a, b);
+}
+
+function wavBlob(samples, rate) {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const str = (o, s) => [...s].forEach((ch, i) => view.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, "data"); view.setUint32(40, samples.length * 2, true);
+  samples.forEach((v, i) => view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, v)) * 32767, true));
+  return new Blob([view], { type: "audio/wav" });
+}
+
+const toBase64 = (blob) => new Promise((res) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(",")[1]);
+  r.readAsDataURL(blob);
+});
+
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || `request failed (${r.status})`);
+  return data;
+}
+
+cloneFile.addEventListener("change", async () => {
+  const file = cloneFile.files[0];
+  cloneAudio = null; clonePreview.hidden = true; cloneText.value = ""; updateCloneBtn();
+  if (!file) return cloneMsg("");
+  if (!cloneName.value) cloneName.value = file.name.replace(/\.[^.]+$/, "").slice(0, 40);
+  try {
+    cloneMsg("Reading the recording…");
+    const clip = await prepareClip(file);
+    const secs = clip.length / CLONE_RATE;
+    if (secs < 2) throw new Error("the recording has less than 2 seconds of speech");
+    const blob = wavBlob(clip, CLONE_RATE);
+    clonePreview.src = URL.createObjectURL(blob);
+    clonePreview.hidden = false;
+    cloneAudio = await toBase64(blob);
+    cloneMsg(`Transcribing ${secs.toFixed(1)} s of speech…`);
+    const { text } = await postJSON("/api/transcribe", { audio: cloneAudio });
+    if (!cloneText.value.trim()) cloneText.value = text;
+    cloneMsg(secs > 10 ? "Check the words above. Tip: 3–10 s clips give faster replies." : "Check the words above, then create the voice.");
+  } catch (err) {
+    cloneMsg(`Could not use this file: ${err.message}`, "err");
+  }
+  updateCloneBtn();
+});
+
+cloneBtn.addEventListener("click", async () => {
+  cloneBtn.disabled = true;
+  cloneMsg("Creating the voice…");
+  try {
+    const { name } = await postJSON("/api/voices", { name: cloneName.value, transcript: cloneText.value, audio: cloneAudio });
+    if (![...voiceSel.options].some((o) => o.value === name)) voiceSel.add(new Option(name.replace(/_/g, " "), name));
+    voiceSel.value = name;
+    sendConfig();
+    cloneMsg(`Voice “${name.replace(/_/g, " ")}” created and selected.`, "ok");
+    cloneFile.value = ""; cloneText.value = ""; cloneName.value = ""; cloneAudio = null; clonePreview.hidden = true;
+  } catch (err) {
+    cloneMsg(err.message, "err");
+  }
+  updateCloneBtn();
 });
 
 // ---------------------------------------------------------------------------- dark mode switch
